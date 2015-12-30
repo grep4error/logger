@@ -45,3 +45,6 @@ class Submitter:
         
         self.d_submit(d_msg, msg_type)            
         return
+    
+class SubmitterError(Exception):
+    pass

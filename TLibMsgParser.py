@@ -18,17 +18,28 @@ class TLibMsgParser(LogParser):
     # requests look like this...
     # 2015-05-29T12:21:16.438 Trc 04541 RequestQueryCall received from [66] (00000e85 CIMplicity_EUW1_L2 10.51.167.61:49280)
     # message RequestQueryCall
+    pattern_tlib_req_received = re.compile('^(\S+) Trc 04541 (\S+).+\((.+)\)') #(\S+) received .+\((\.+)\)$')
     # OR 
     # @12:21:16.4386 [BSYNC] Trace: Send to backup (SIPS_sg01_B) [20]:
     # message RequestSetCallInfo
-    
-
     pattern_tlib_req = re.compile('^message (Request\S+)$')
     # ConnID ...
     pattern_tlib_conn_id = re.compile('\tAttributeConnID\t(\S+)$')
     # ThisDN
     pattern_tlib_this_dn = re.compile('\tAttributeThisDN\t\'(\S+)\'$')
-    
+    # Errors...
+    # @23:16:17.4586 [0] 8.1.101.33 send_to_client: message EventError
+    #     (DN is not configured in CME)
+    #     AttributeEventSequenceNumber    00000000010c9288
+    #     AttributeTimeinuSecs    458658
+    #     AttributeTimeinSecs    1439853377 (23:16:17)
+    #     AttributeErrorCode    59
+    #     AttributeErrorMessage    'DN is not configured in CME'
+    #     ...
+    #     AttributeThisDN    '0091BAFE-5E73-1473-97EF-443C330AAA77'
+    #     AttributeClientID    1145
+    # 2015-08-17T23:16:17.458 Int 04545 Interaction message "EventError" sent to 24 ("ICON_localdb")
+    # 2015-08-17T23:16:17.458 Trc 04542 EventError sent to [24] (00000479 ICON_localdb 10.51.60.68:59022)    
  
      
     def __init__(self,submitter,tags={}):
@@ -62,6 +73,19 @@ class TLibMsgParser(LogParser):
         if(claimed):
             if(self.in_tlib_msg):
                 self.submit_tlib_message()
+            else: # TLib request is a StdLib message that may be claimed
+                # logging.debug("checking for TLib req in line "+ line)
+                self.re_line = self.pattern_tlib_req_received.match(line)
+                if(self.re_line):
+                    # logging.debug("matched TLib req in "+line)
+                    self.match_time_stamp(self.re_line.group(1))
+                    self.init_tlib_message()
+                    self.d_tlib_msg['method'] = self.re_line.group(2)                      
+                    self.d_tlib_msg['from'] = self.re_line.group(3)                      
+                    self.d_tlib_msg['@timestamp'] = datetime(self.cur_date['y'],self.cur_date['m'],self.cur_date['d'],self.cur_time['h'],self.cur_time['m'],self.cur_time['s'],self.cur_time['ms'])
+                        
+                    return True
+                    
             return False
         # are we in the part of the TLib log that is a TLib Message?
         if(self.in_tlib_msg):
@@ -83,7 +107,7 @@ class TLibMsgParser(LogParser):
                 #and we'll be expecting a timestamp after the TLib message ends
                 if(self.match_time_stamp(line)):
                     self.submit_tlib_message()
-                    # aonthe TLib message can begin right here, therefore need to parse this line
+                    # another TLib message can begin right here, therefore need to parse this line
                     return self.parse_line(line)
             #    #else:
 
@@ -103,12 +127,11 @@ class TLibMsgParser(LogParser):
                 return True
             # scout for time stamps
             if(self.match_time_stamp(line)):
-            #print "-- match?"
                 self.re_line = self.pattern_tlib_msg.search(line)
                 if(self.re_line):
                     self.init_tlib_message()
                     self.tlib_msg = self.tlib_msg + line
-                    self.d_tlib_msg['method'] = self.re_line.group(1)  
+                    self.d_tlib_msg['method'] = self.re_line.group(1)                      
                     self.d_tlib_msg['@timestamp'] = datetime(self.cur_date['y'],self.cur_date['m'],self.cur_date['d'],self.cur_time['h'],self.cur_time['m'],self.cur_time['s'],self.cur_time['ms'])
                     
                     return True

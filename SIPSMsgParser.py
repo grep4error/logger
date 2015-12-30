@@ -53,15 +53,15 @@ class SIPSMsgParser(LogParser):
             self.in_sip_msg += 1
             if(self.in_sip_msg == 2): # first line
                 if(line[:7] == 'SIP/2.0'):
-                    self.d_sip_msg['method'] = line[8:].rstrip()
+                    self.d_sip_msg['method'] = (line[8:].rstrip())[:4096]
                 else:
-                    self.d_sip_msg['method'] = (line.split())[0]    
+                    self.d_sip_msg['method'] = ((line.split())[0])[:4096]    
             else:    
                 # call id?
                 if not 'call_id' in self.d_sip_msg.keys():
                     _re_call_id = self.pattern_sip_call_id.match(line)
                     if(_re_call_id):
-                        self.d_sip_msg['call_id'] = _re_call_id.group(1).rstrip()
+                        self.d_sip_msg['call_id'] = (_re_call_id.group(1).rstrip())[:4096]
                 # checking for the end, and sending
                 if(self.match_time_stamp(line)):
                     self.submit_sip_message()
@@ -81,7 +81,7 @@ class SIPSMsgParser(LogParser):
                     self.init_sip_message()
                     self.match_time_stamp(self.re_line.group(1))
                     #self.d_sip_msg['@datetimestr'] = self.re_line.group(1)
-                    self.d_sip_msg['from'] = self.re_line.group(2)  
+                    self.d_sip_msg['from'] = (self.re_line.group(2))[:4096]  
                     self.d_sip_msg['@timestamp'] = datetime(self.cur_date['y'],self.cur_date['m'],self.cur_date['d'],self.cur_time['h'],self.cur_time['m'],self.cur_time['s'],self.cur_time['ms'])
                 else:
                     self.re_line = self.pattern_sip_msg_sent.match(line)
@@ -89,7 +89,7 @@ class SIPSMsgParser(LogParser):
                         self.init_sip_message()
                         self.match_time_stamp(self.re_line.group(1))
                         #self.d_sip_msg['@datetimestr'] = self.re_line.group(1)                    
-                        self.d_sip_msg['to'] = self.re_line.group(2)
+                        self.d_sip_msg['to'] = (self.re_line.group(2))[:4096]
                         self.d_sip_msg['@timestamp'] = datetime(self.cur_date['y'],self.cur_date['m'],self.cur_date['d'],self.cur_time['h'],self.cur_time['m'],self.cur_time['s'],self.cur_time['ms'])
 
 #            if(self.pattern_std_msg.match(line)): 

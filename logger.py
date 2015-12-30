@@ -9,6 +9,7 @@ import eSSubmitter
 import CSVPrintSubmitter
 import logging
 import json
+from Submitter import SubmitterError
 
 # returns the file name and the position where parsing shoud resume or begin
 # the file name is '' if no path or file found
@@ -172,7 +173,11 @@ else:
     else: 
         if(cmdline_submitter == 'csv'):
             logging.debug('submitter set to csv')
-            submitter = CSVPrintSubmitter.CSVPrintSubmitter(cmdline_fields,cmdline_formats)  
+            submitter = CSVPrintSubmitter.CSVPrintSubmitter(cmdline_fields,cmdline_formats)
+        else:
+            logging.warn('submitter not set, using default')
+            submitter = Submitter.Submitter(cmdline_fields,cmdline_formats)
+                  
           
     if 'stdlib' in cmdline_parsers_list:
         log_parser.append( StdLibParser.StdLibParser(submitter,tags=cmdline_tags) )
@@ -201,10 +206,15 @@ else:
                 
                 line_claimed = False
                 for parser in log_parser:
-                    if(line_claimed):
-                        parser.parse_line(line.decode('utf-8', 'ignore'),line_claimed)
-                    else:    
-                        line_claimed = parser.parse_line(line.decode('utf-8', 'ignore'))
+                    try:
+                        if(line_claimed):
+                            parser.parse_line(line.decode('utf-8', 'ignore'),line_claimed)
+                        else:    
+                            line_claimed = parser.parse_line(line.decode('utf-8', 'ignore'))
+                    except SubmitterError:
+                        logging.error("ERROR encounted during submit, exiting")
+                        save_current_file_and_pos_for_mask(cmdline_offset_file,cur_file_name,cur_file.tell())
+                        exit(1)
                     
             logging.info("current file position "+str(cur_file.tell()))     
             save_current_file_and_pos_for_mask(cmdline_offset_file,cur_file_name,cur_file.tell())
