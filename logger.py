@@ -99,7 +99,7 @@ else:
     cmdline_submitter    = 'submitter'
     cmdline_log_level    = 'info'
     cmdline_fields       = ''
-    cmdline_tags         = ''
+    cmdline_tags         = {} # was '', failing when to tags passed
     cmdline_esurl        = 'http://localhost:9200'
     cmdline_eschunk      = 900
     cmdline_formats       = {}

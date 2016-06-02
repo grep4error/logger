@@ -22,7 +22,7 @@ class CSVPrintSubmitter(Submitter):
             if key in d_msg.keys():
                 self.out += str(d_msg[key])
             self.out += ','
-        self.out += str(d_msg[self.fields[-1]])    
+        self.out += str(d_msg.get(self.fields[-1],''))    
         
         print self.out
     

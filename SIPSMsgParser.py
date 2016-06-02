@@ -9,10 +9,10 @@ class SIPSMsgParser(LogParser):
 
     # beginning of SIP message received by SIP Server
     # 16:45:03.031: SIPTR: Received [0,UDP] 467 bytes from 10.51.34.110:5060 <<<<<
-    pattern_sip_msg_received = re.compile('^(\S+): SIPTR: Received \[\S+\] \d+ bytes from (\S+) <<<<<$')
+    pattern_sip_msg_received = re.compile('^(\S+)(?::|) SIPTR: Received \[\S+\] \d+ bytes from (\S+) <<<<<$')
     # beggining of a SIP message sent by SIP Server
     # 16:45:04.720: Sending  [0,UDP] 406 bytes to 10.51.34.110:5060 >>>>>
-    pattern_sip_msg_sent = re.compile('^(\S+): Sending  \[\S+\] \d+ bytes to (\S+) >>>>>$')
+    pattern_sip_msg_sent = re.compile('^(\S+)(?::|) Sending  \[\S+\] \d+ bytes to (\S+) >>>>>$')
     # Call-ID: ...
     pattern_sip_call_id = re.compile('Call-ID: (.+)$', re.IGNORECASE)
  
