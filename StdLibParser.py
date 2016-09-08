@@ -17,6 +17,9 @@ class StdLibParser(LogParser):
     def parse_line(self, line, claimed=False):
         if(claimed):
             return False
+        if(line[0] not in self.timestamp_begin):
+            return False
+
         if(self.match_time_stamp(line)):
             self.re_line = self.pattern_std_msg.search(line)
             if(self.re_line): 

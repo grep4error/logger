@@ -24,9 +24,10 @@ class TLibMsgParser(LogParser):
     # message RequestSetCallInfo
     pattern_tlib_req = re.compile('^message (Request\S+)$')
     # ConnID ...
-    pattern_tlib_conn_id = re.compile('\tAttributeConnID\t(\S+)$')
+    # pattern_tlib_conn_id = re.compile('\tAttributeConnID\t(\S+)$')
+    pattern_tlib_conn_id = re.compile('^\tAttributeConnID\t([0-9a-f]+)$')
     # ThisDN
-    pattern_tlib_this_dn = re.compile('\tAttributeThisDN\t\'(\S+)\'$')
+    pattern_tlib_this_dn = re.compile('^\tAttributeThisDN\t\'(\S+)\'$')
     # Errors...
     # @23:16:17.4586 [0] 8.1.101.33 send_to_client: message EventError
     #     (DN is not configured in CME)
@@ -51,11 +52,15 @@ class TLibMsgParser(LogParser):
         self.d_tlib_msg = {}
         # bool we are in sip msg
         self.in_tlib_msg = 0
+        self.has_ConnID = False
+        self.has_ThisDN = False
 
         
     def init_tlib_message(self):
         self.in_tlib_msg = 1
         self.tlib_msg = ''
+        self.ConnID = False
+        self.ThisDN = False
         self.d_tlib_msg.clear()
         self.d_tlib_msg = self.d_common_tags.copy()
         return
@@ -91,13 +96,15 @@ class TLibMsgParser(LogParser):
         if(self.in_tlib_msg):
             self.in_tlib_msg += 1
             # Conn ID?
-            if not 'ConnID' in self.d_tlib_msg.keys():
+            if not self.has_ConnID:
                 _re_conn_id = self.pattern_tlib_conn_id.match(line)
                 if(_re_conn_id):
+                    self.has_ConnID = True
                     self.d_tlib_msg['ConnID'] = _re_conn_id.group(1).rstrip()
-            if not 'ThisDN' in self.d_tlib_msg.keys():
+            if not self.has_ThisDN:
                 _re_this_dn = self.pattern_tlib_this_dn.match(line)
                 if(_re_this_dn):
+                    self.has_ThisDN = True 
                     self.d_tlib_msg['ThisDN'] = _re_this_dn.group(1).rstrip()       
             #    # checking for the end, and sending
 
@@ -114,7 +121,7 @@ class TLibMsgParser(LogParser):
             self.tlib_msg = self.tlib_msg + line
             return True
         
-        # we are not, looking for the beggining of the SIP Message  
+        # we are not, looking for the beggining of the TLib Message  
         else:
             # TLib requests...
             _re_tlib_req = self.pattern_tlib_req.match(line)
@@ -126,15 +133,16 @@ class TLibMsgParser(LogParser):
                 
                 return True
             # scout for time stamps
-            if(self.match_time_stamp(line)):
-                self.re_line = self.pattern_tlib_msg.search(line)
-                if(self.re_line):
-                    self.init_tlib_message()
-                    self.tlib_msg = self.tlib_msg + line
-                    self.d_tlib_msg['method'] = self.re_line.group(1)                      
-                    self.d_tlib_msg['@timestamp'] = datetime(self.cur_date['y'],self.cur_date['m'],self.cur_date['d'],self.cur_time['h'],self.cur_time['m'],self.cur_time['s'],self.cur_time['ms'])
+            if(line[0] in self.timestamp_begin):
+                if(self.match_time_stamp(line)):
+                    self.re_line = self.pattern_tlib_msg.search(line) # (line[self.match_result.end():])
+                    if(self.re_line):
+                        self.init_tlib_message()
+                        self.tlib_msg = self.tlib_msg + line
+                        self.d_tlib_msg['method'] = self.re_line.group(1)                      
+                        self.d_tlib_msg['@timestamp'] = datetime(self.cur_date['y'],self.cur_date['m'],self.cur_date['d'],self.cur_time['h'],self.cur_time['m'],self.cur_time['s'],self.cur_time['ms'])
                     
-                    return True
+                        return True
                     
         return False
 

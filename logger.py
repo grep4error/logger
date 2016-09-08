@@ -10,6 +10,7 @@ import CSVPrintSubmitter
 import logging
 import json
 from Submitter import SubmitterError
+import time
 
 # returns the file name and the position where parsing shoud resume or begin
 # the file name is '' if no path or file found
@@ -188,6 +189,9 @@ else:
     if 'sipgvp' in cmdline_parsers_list:      
         log_parser.append( SIPGVPMsgParser.SIPGVPMsgParser(submitter,tags=cmdline_tags) )
 
+# timing
+    start_time = time.time()
+
 # reading files
 
     file_list = glob.glob(cmdline_file_mask)
@@ -220,3 +224,6 @@ else:
             save_current_file_and_pos_for_mask(cmdline_offset_file,cur_file_name,cur_file.tell())
             cur_file.close()
             file_and_pos[1] = 0
+
+#how long did it take?
+    logging.error("TOOK ME "+ str(time.time()-start_time)+" seconds to crunch this")

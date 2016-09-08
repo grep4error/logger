@@ -9,12 +9,14 @@ class SIPSMsgParser(LogParser):
 
     # beginning of SIP message received by SIP Server
     # 16:45:03.031: SIPTR: Received [0,UDP] 467 bytes from 10.51.34.110:5060 <<<<<
-    pattern_sip_msg_received = re.compile('^(\S+)(?::|) SIPTR: Received \[\S+\] \d+ bytes from (\S+) <<<<<$')
+    # pattern_sip_msg_received = re.compile('^(\S+)(?::|) SIPTR: Received \[\S+\] \d+ bytes from (\S+) <<<<<$')
+    pattern_sip_msg_received = re.compile('^([0-9.:]+)(?::|) SIPTR: Received \[\S+\] \d+ bytes from ([0-9.:]+) <<<<<$')
+
     # beggining of a SIP message sent by SIP Server
     # 16:45:04.720: Sending  [0,UDP] 406 bytes to 10.51.34.110:5060 >>>>>
-    pattern_sip_msg_sent = re.compile('^(\S+)(?::|) Sending  \[\S+\] \d+ bytes to (\S+) >>>>>$')
+    pattern_sip_msg_sent = re.compile('^([0-9.:]+)(?::|) Sending  \[\S+\] \d+ bytes to ([0-9.:]+) >>>>>$')
     # Call-ID: ...
-    pattern_sip_call_id = re.compile('Call-ID: (.+)$', re.IGNORECASE)
+    pattern_sip_call_id = re.compile('Call-ID: (.+)$', re.IGNORECASE)    
  
      
     def __init__(self,submitter,tags={}):
@@ -63,9 +65,11 @@ class SIPSMsgParser(LogParser):
                     if(_re_call_id):
                         self.d_sip_msg['call_id'] = (_re_call_id.group(1).rstrip())[:4096]
                 # checking for the end, and sending
-                if(self.match_time_stamp(line)):
-                    self.submit_sip_message()
-                    return self.parse_line(line)
+
+                if(line[0] in self.timestamp_begin):
+                    if(self.match_time_stamp(line)):
+                        self.submit_sip_message()
+                        return self.parse_line(line)
                 #else:
 
             self.sip_msg = self.sip_msg + line
@@ -74,6 +78,8 @@ class SIPSMsgParser(LogParser):
         # we are not, looking for the beggining of the SIP Message  
         else:
             # scout for time stamps
+            if(line[0] not in self.timestamp_begin):
+                return False
             if(self.match_time_stamp(line)):
             #print "-- match?"
                 self.re_line = self.pattern_sip_msg_received.match(line)

@@ -42,11 +42,13 @@ class eSSubmitter(Submitter):
         logging.debug('message: '+str(self.op_data))
         #self.json_msg_body = json.dumps(d_msg,default=self.json_serial)
         #print self.json_msg_body
-        if (len(self.actions) < self.chunk_size):
-            self.actions.append(self.op_data)
-        else:    
+        self.actions.append(self.op_data)
+        
+        if (len(self.actions) == self.chunk_size):    
             try:
                 self.bulk_result = helpers.bulk(self.eS, self.actions, stats_only = False)
+                # helpers.parallel_bulk(self.eS, self.actions)
+
             except:
                 logging.error("ERROR in elasticsearch BULK...")
                 #self.bulk_result = helpers.bulk(self.eS, self.actions, stats_only = False)
@@ -65,9 +67,11 @@ class eSSubmitter(Submitter):
     def __del__(self):
         try:
             self.bulk_result = helpers.bulk(self.eS, self.actions, stats_only = False)
+            helpers.parallel_bulk(self.eS, self.actions)
         except:
             logging.error("ERROR in final elasticsearch BULK...")
             #self.bulk_result = helpers.bulk(self.eS, self.actions, stats_only = False)
+            
             raise SubmitterError()
         
         if(hasattr(self,'bulk_result')):    

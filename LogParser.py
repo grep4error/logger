@@ -11,9 +11,14 @@ class LogParser:
     pattern_time_only = re.compile(r'^(@)?(\d{2}):(\d{2}):(\d{2}).(\d{3,4})')
     pattern_time_date = re.compile(r'(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2}).(\d{3,4})')
 
+    # let's see if combining two will speed up matching
+    pattern_timestamp = re.compile(r'^(?:@)?(\d{2}):(\d{2}):(\d{2}).(\d{3,4})|^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2}).(\d{3,4})')
+
     # the file may have time and date in it's name that can be used for setting the initial time reference
     # it looks like this 20150619_111018
     pattern_file_time_date = re.compile(r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})')
+ 
+    timestamp_begin = set(['0','1','2','3','4','5','6','7','8','9','@'])
  
     # date and time are class variables
     # current date, today by default
@@ -93,6 +98,49 @@ class LogParser:
         return
     
     def match_time_stamp(self,str_to_match):
+        # logging.debug("matching time stamp")
+        self.match_result = self.pattern_timestamp.match(str_to_match)
+        if(self.match_result):
+            # print(str(self.match_result.lastindex)+" - "+str_to_match)
+            if(self.match_result.lastindex == 11): # date and time
+                # set date
+                self.cur_date['y'] = int(self.match_result.group(5))
+                self.cur_date['m'] = int(self.match_result.group(6))
+                self.cur_date['d'] = int(self.match_result.group(7))
+                # and time
+                self.cur_time['h'] = int(self.match_result.group(8))
+                self.cur_time['m'] = int(self.match_result.group(9))
+                self.cur_time['s'] = int(self.match_result.group(10))  
+                __str_msec = self.match_result.group(11) + '00'
+
+                if(len(__str_msec) == 5):
+                    __str_msec = __str_msec + '0'
+                    
+                self.cur_time['ms'] = int(__str_msec)  
+                return True
+            else:  # date only
+                # and time
+                __str_msec = self.match_result.group(4) + '00'
+                if(len(__str_msec) == 5):
+                    __str_msec = __str_msec + '0'
+                __int_hour   = int(self.match_result.group(1))
+                __int_minute = int(self.match_result.group(2))
+                __int_second = int(self.match_result.group(3))
+                __int_msec   = int(__str_msec)
+                # lazy cheking for midnight rollover
+            
+                if(__int_hour < self.cur_time['h']):
+                    self.increment_date()
+            
+                self.cur_time['h']  = __int_hour
+                self.cur_time['m']  = __int_minute
+                self.cur_time['s']  = __int_second
+                self.cur_time['ms'] = __int_msec
+                return True
+                            
+        return False
+
+    def match_time_stamp_old(self,str_to_match):
         self.match_result = self.pattern_time_date.match(str_to_match)
         if(self.match_result):
             # set date
