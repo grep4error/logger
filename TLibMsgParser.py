@@ -59,8 +59,8 @@ class TLibMsgParser(LogParser):
     def init_tlib_message(self):
         self.in_tlib_msg = 1
         self.tlib_msg = ''
-        self.ConnID = False
-        self.ThisDN = False
+        self.has_ConnID = False
+        self.has_ThisDN = False
         self.d_tlib_msg.clear()
         self.d_tlib_msg = self.d_common_tags.copy()
         return
