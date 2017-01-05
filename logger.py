@@ -5,6 +5,7 @@ import StdLibParser
 import SIPSMsgParser
 import SIPGVPMsgParser
 import TLibMsgParser
+import CSMsgParser
 import Submitter
 import eSSubmitter
 import CSVPrintSubmitter
@@ -192,6 +193,8 @@ else:
         log_parser.append( TLibMsgParser.TLibMsgParser(submitter,tags=cmdline_tags) )
     if 'sipgvp' in cmdline_parsers_list:      
         log_parser.append( SIPGVPMsgParser.SIPGVPMsgParser(submitter,tags=cmdline_tags) )
+    if 'cs' in cmdline_parsers_list:
+        log_parser.append( CSMsgParser.CSMsgParser(submitter,tags=cmdline_tags) )
 
 # timing
     start_time = time.time()
