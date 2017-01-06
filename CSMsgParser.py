@@ -121,7 +121,7 @@ class CSMsgParser(LogParser):
                     self.match_time_stamp(self.re_line.group(1))
                     self.cs_msg =  line[len(self.re_line.group(1)):]
                     self.d_cs_msg['csmsgclass'] = CSLogMessageType.ServerResponce
-                    self.d_cs_msg['request'] = (self.re_line.group(2))[:4096]
+                    self.d_cs_msg['method'] = (self.re_line.group(2))[:4096]
                     # self.d_cs_msg['details'] = (self.re_line.group(3))[:4096]
                     self.d_cs_msg['@timestamp'] = datetime(self.cur_date['y'],self.cur_date['m'],self.cur_date['d'],self.cur_time['h'],self.cur_time['m'],self.cur_time['s'],self.cur_time['ms'])
                     return True
@@ -132,7 +132,7 @@ class CSMsgParser(LogParser):
                         self.match_time_stamp(self.re_line.group(1))
                         self.cs_msg = line[len(self.re_line.group(1)):]
                         self.d_cs_msg['csmsgclass'] = CSLogMessageType.ClientRequest
-                        self.d_cs_msg['request'] = (self.re_line.group(2))[:4096]
+                        self.d_cs_msg['method'] = (self.re_line.group(2))[:4096]
                         # self.d_cs_msg['details'] = (self.re_line.group(3))[:4096]
                         self.d_cs_msg['@timestamp'] = datetime(self.cur_date['y'],self.cur_date['m'],self.cur_date['d'],self.cur_time['h'],self.cur_time['m'],self.cur_time['s'],self.cur_time['ms'])
                         return True
@@ -258,9 +258,9 @@ class CSMsgParser(LogParser):
                 is_request_found = False
                 if clientid in self.d_cs_clients_msgs:
                     for refid in self.d_cs_clients_msgs[clientid]:
-                        if self.d_cs_clients_msgs[clientid][refid]['request']:
-                            if (self.d_cs_clients_msgs[clientid][refid]['request'].startswith("MSGCFG_GETOBJECT") or
-                                self.d_cs_clients_msgs[clientid][refid]['request'].startswith("MSGCFG_GETBRIEF")):
+                        if self.d_cs_clients_msgs[clientid][refid]['method']:
+                            if (self.d_cs_clients_msgs[clientid][refid]['method'].startswith("MSGCFG_GETOBJECT") or
+                                self.d_cs_clients_msgs[clientid][refid]['method'].startswith("MSGCFG_GETBRIEF")):
                                     is_request_found = True
                                     self.d_cs_clients_msgs[clientid][refid]['objcntr'] = num
                                     self.d_cs_clients_msgs[clientid][refid]['objtype'] = sobj
