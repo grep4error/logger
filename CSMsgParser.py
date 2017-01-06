@@ -180,8 +180,11 @@ class CSMsgParser(LogParser):
                     self.d_cs_msg['clientid'] = clientid
                     self.d_cs_msg['query'] = reqquery
                     return False # we will push request after we update it with details from server's responce: TBD what to do if no responce/timeout/disconnect
+            logging.info("Ignored request (wrong format): " + str(self.d_cs_msg))
+
         else:
-            print "Ignored request: %s" % (self.d_cs_msg) # TODO: debug
+            logging.info("Ignored request (wrong format): "+ str(self.d_cs_msg) )
+
         return True # this is unknown request/client , push it as is
 
     def process_cs_responce_message(self):
@@ -234,27 +237,38 @@ class CSMsgParser(LogParser):
                             del self.d_cs_clients_msgs[clientid][refid]
                             return True # responce has been updated, push self.d_cs_msg to submiter
 
-                    print "Ignored responce (no match): %s" % (self.d_cs_msg) # TODO: debug
+                    logging.info("Ignored responce (no match): " + str(self.d_cs_msg))
         else:
-            print "Ignored responce (wrong format): %s" % (self.d_cs_msg) # TODO: debug
-        return False # this is unknown responce
+            logging.info ("Ignored responce (wrong format): " +str(self.d_cs_msg))
+        return False # this is unknown responce, do not push to storage
 
 
     def process_cs_results_message(self):
-        # TODO: revisit
-        return False
-
         lines = self.cs_msg.splitlines(1);
-        if lines[0]:
+        if len(lines) > 0 and lines[0]:
             tokens = lines[0].split();
-            if len(tokens) >= 7:
+            if len(tokens) >= 14:
                 tnum = tokens[4]
                 snum = tnum[1:-1]
                 num = int(snum)
                 tobj = tokens[8]
                 sobj = tobj[1:-1]
-                self.d_cs_msg['objects_sent'] = num
-                self.d_cs_msg['object_type'] = sobj
+                tclientid = tokens[13]
+                clientid = tclientid [1:-1]
+                is_request_found = False
+                if clientid in self.d_cs_clients_msgs:
+                    for refid in self.d_cs_clients_msgs[clientid]:
+                        if self.d_cs_clients_msgs[clientid][refid]['request']:
+                            if (self.d_cs_clients_msgs[clientid][refid]['request'].startswith("MSGCFG_GETOBJECT") or
+                                self.d_cs_clients_msgs[clientid][refid]['request'].startswith("MSGCFG_GETBRIEF")):
+                                    is_request_found = True
+                                    self.d_cs_clients_msgs[clientid][refid]['objcntr'] = num
+                                    self.d_cs_clients_msgs[clientid][refid]['objtype'] = sobj
+
+                if (not is_request_found):
+                    logging.info("Ingnored detail message (no match): " +str(self.d_cs_msg) )
+
+        return False # result message shoudl be discarded (will push updated entry when we process final responce msg)
 
 
 
