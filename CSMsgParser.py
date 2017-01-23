@@ -6,7 +6,10 @@ import logging
 
 
 class CSLogMessageType:
-        Unknown,ClientRequest, ServerResponce, ServerResponceDetail = range(4)
+        Unknown, \
+        ClientRequest, ServerResponce, ServerResponceDetail, \
+        ExtAuthRequest,ExtAuthRequestAccepted, \
+        ExtAuthInitConnection, ExtAuthInitConnectionAccepted, ExtAuthBIND = range(9)
 
 class CSMsgParser(LogParser):
     # static vars
@@ -45,13 +48,28 @@ class CSMsgParser(LogParser):
     # Trc 04542 Message MSGCFG_ENDOBJECTSLIST sent to 326 (InteractionWorkspace  'Workspace')
     # Trc 04542 Message MSGCFG_OBJPERMISSIONS sent to 18 (SCE 'default')
     # Trc 04542 Message MSGCFG_SERVERPROTOCOL
-    # [optional, --isregsync] Trc 04541 Message MSGCFG_CLIENTREGISTER
-    # [optional, --isregsync] Trc 04541 Message MSGCFG_AUTHENTICATE
+    # [optional] Trc 04542 Message MSGCFG_CLIENTREGISTERED
     # 2016-11-25T11:25:20.339 Trc 04542 Message MSGCFG_AUTHENTICATED sent to 55 (GenericClient 'Cloud')
     pattern_cs_msg_responce = re.compile('^(\S+) Trc 04542 Message (\S+)\s+(.+)') #(\S+) sent .+\((\.+)\)$')
 
     # 2016-11-25T12:25:19.645 Trc 24215 There are [1] objects of type [CfgApplication] sent to the client [16] (application [default], type [SCE])
     pattern_cs_results_sent = re.compile('^(\S+) Trc 24215 There are (\S+)\s+(.+)')
+
+    # AUT_MAIN: 20:33:12.879 AUT_MAIN: Put request to queue. Request ID = 2
+    pattern_cs_extauth_put = re.compile('^(\S+) AUT_MAIN: Put request to queue. Request ID = (\S+)') # to match main thread submit request
+
+    # 20:33:12.910 AUT_DBG: Authentication request received. Request ID = 2
+    pattern_cs_extauth_put_accept = re.compile('^(\S+) AUT_DBG: Authentication request received. Request ID = (\S+)') # to match ext auth thread pull request
+
+    # 20:33:12.740 AUTH_DBG: Initialized data for connection to LDAP server: localhost:389...
+    pattern_cs_extauth_conn_init = re.compile('^(\S+) AUTH_DBG: Initialized data for connection to LDAP server')
+
+    # 20:33:12.741 AUTH_DBG: BIND sent for request ID: -1, LDAP message ID: 1 Connection: ldap://localhost:389 (0xd50:1:0)
+    pattern_cs_extauth_conn_bind = re.compile('^(\S+) AUTH_DBG: BIND sent for request ID: (-?[0-9]+)') # search == -1, bind == actual request
+
+    # 20:33:12.741 AUTH_DBG: Connection type 1 is initialized.
+    pattern_cs_extauth_conn_inited = re.compile('^(\S+) AUTH_DBG: Connection type (\d+) is initialized') # type==1 - search, 2-bind
+
 
 
 
@@ -63,6 +81,9 @@ class CSMsgParser(LogParser):
         self.cs_msg = ''
         # dictionary for current CS msg
         self.d_cs_msg = {}
+        # dictonary for previous CS message TODO: do we need a full stack ?
+        self.d_cs_msg_stack =[]
+
         # bool we are in CS msg
         self.in_cs_msg = 0
         # dictionary for messages per clients that are currently pending future processing
@@ -73,12 +94,17 @@ class CSMsgParser(LogParser):
         self.in_cs_msg = 1
         self.cs_msg = ''
         #self.d_cs_msg.clear()
+        if self.d_cs_msg_stack:
+            self.d_cs_msg_stack.pop(0)
+        self.d_cs_msg_stack.append(self.d_cs_msg) # last processed message into stack
         self.d_cs_msg = self.d_common_tags.copy()
         self.d_cs_msg['csmsgclass']= CSLogMessageType.Unknown
+        self.d_cs_msg['vararg0'] =None
         return
     
     def submit_cs_message(self):
-        self.d_cs_msg['message'] = self.cs_msg
+        if self.cs_msg:
+            self.d_cs_msg['message'] = self.cs_msg
         # TODO: only submit messages into submiter when processing has been completed (we have matching responce. maybe check for timeout, client disconnect, etc?)
         is_ready_for_push = False
         if (self.d_cs_msg['csmsgclass']==CSLogMessageType.ClientRequest):
@@ -87,8 +113,12 @@ class CSMsgParser(LogParser):
             is_ready_for_push = self.process_cs_responce_message()
         elif (self.d_cs_msg['csmsgclass']==CSLogMessageType.ServerResponceDetail):
             is_ready_for_push = self.process_cs_results_message()
+        elif (self.d_cs_msg['csmsgclass'])==CSLogMessageType.ExtAuthRequest:
+            is_ready_for_push = self.process_exta_request_message()
 
         if is_ready_for_push:
+            if 'vararg0' in self.d_cs_msg:
+                del self.d_cs_msg['vararg0'] # cleanup transient tags attached during parsing phase
             self.submitter.d_submit(self.d_cs_msg,"CS")
         self.in_cs_msg = 0
         return
@@ -96,7 +126,7 @@ class CSMsgParser(LogParser):
     def parse_line(self, line, claimed=False):
         if(claimed):
             if(self.in_cs_msg):
-                self.submit_sip_message()
+                self.submit_cs_message()
             return False
         # print line
         # are we in the part of the CS log that is CS Message?
@@ -150,6 +180,20 @@ class CSMsgParser(LogParser):
                                                                    self.cur_time['m'], self.cur_time['s'],
                                                                    self.cur_time['ms'])
                             return True
+                        else:
+                            self.re_line = self.pattern_cs_extauth_put.match(line)
+                            if (self.re_line):
+                                self.init_cs_message()
+                                self.match_time_stamp(self.re_line.group(1))
+                                self.cs_msg = line[len(self.re_line.group(1)):]
+                                self.d_cs_msg['csmsgclass'] = CSLogMessageType.ExtAuthRequest
+                                self.d_cs_msg['vararg0'] = (self.re_line.group(2))[:4096] # extauth request id in debug message
+                                self.d_cs_msg['@timestamp'] = datetime(self.cur_date['y'], self.cur_date['m'],
+                                                                       self.cur_date['d'], self.cur_time['h'],
+                                                                       self.cur_time['m'], self.cur_time['s'],
+                                                                       self.cur_time['ms'])
+                                return True
+
         return False
 
 
@@ -175,7 +219,9 @@ class CSMsgParser(LogParser):
                         self.d_cs_clients_msgs[clientid] = {}
                     if not refid in self.d_cs_clients_msgs[clientid]:
                         self.d_cs_clients_msgs[clientid][refid] = {}
-                    self.d_cs_clients_msgs[clientid][refid] = self.d_cs_msg
+                    if not CSLogMessageType.ClientRequest in self.d_cs_clients_msgs[clientid][refid]:
+                        self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest] = {}
+                    self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest] = self.d_cs_msg
                     self.d_cs_msg['reqid'] = refid
                     self.d_cs_msg['clientid'] = clientid
                     self.d_cs_msg['query'] = reqquery
@@ -187,6 +233,27 @@ class CSMsgParser(LogParser):
 
         return True # this is unknown request/client , push it as is
 
+    def process_exta_request_message(self):
+        prev_msg = next(iter(self.d_cs_msg_stack or []), None)
+        if prev_msg and prev_msg['csmsgclass']==CSLogMessageType.ClientRequest and (prev_msg['method']=='MSGCFG_CLIENTREGISTER' or prev_msg['method']=='MSGCFG_AUTHENTICATE'):
+            prev_msg['reqid_exta']=self.d_cs_msg['vararg0'] # store reference id  of mf_auth module request
+            refid = prev_msg['reqid']
+            self.d_cs_msg['reqid']= refid # and copy client ref id from cs request here
+            self.d_cs_msg['reqid_exta']=self.d_cs_msg['vararg0']
+            clientid = prev_msg['clientid']
+            self.d_cs_msg['clientid'] =clientid
+            if not clientid in self.d_cs_clients_msgs:
+                self.d_cs_clients_msgs[clientid] = {}
+            if not refid in self.d_cs_clients_msgs[clientid]:
+                self.d_cs_clients_msgs[clientid][refid] = {}
+            if not CSLogMessageType.ExtAuthRequest in self.d_cs_clients_msgs[clientid][refid]:
+                self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ExtAuthRequest] = {}
+            self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ExtAuthRequest] = self.d_cs_msg
+
+            return False # we will push extauth request after we update it with thread response
+
+
+
     def process_cs_responce_message(self):
         lines = self.cs_msg.splitlines(1);
         if len(lines) > 0 and lines[0]:
@@ -197,45 +264,60 @@ class CSMsgParser(LogParser):
                 if pc != -1:
                     pce = self.cs_msg.find('\n', pc + 37)
                     refid = self.cs_msg[pc + 37:pce]
+                    method = CSLogMessageType.ClientRequest;
                     ''' Check if request exists in pool '''
                     reqfound = False
                     if clientid in self.d_cs_clients_msgs:
                         if refid in self.d_cs_clients_msgs[clientid]:
-                            reqfound = True
-                            reqdt = self.d_cs_clients_msgs[clientid][refid]['@timestamp']
-                            resdt = self.d_cs_msg['@timestamp']
-                            dtdiff = resdt - reqdt
-                            msdelta = int(dtdiff.total_seconds() * 1000)
-                            #if self.requestsPool[clientid][refid]['reqid'] == "MSGCFG_GETOBJECTINFO" or \
-                            #                self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETBRIEFINFO' or \
-                            #                self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETOBJPERMISSIONS' or \
-                            #                self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETOBJECTINFOEX' or \
-                            #                self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETSERVERPROTOCOL' or \
-                            #                (self.isregistersync and self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_CLIENTREGISTER') or \
-                            #                (self.isregistersync and self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_AUTHENTICATE'):
-                            #    """ Time,ClientID,RefId,Request,Duration,Query,ObjectType,ObjectNum,Start,End,StartFile,StartLine,EndFile,EndLine """
-                            #    self.outfile.write(resdt.strftime('%m-%dT%H:%M:%S') + ',' + clientid + ',' + refid + ',')
-                            #    self.outfile.write(self.requestsPool[clientid][refid]['reqid'] + ',')
-                            #    self.outfile.write(str(msdelta) + ',')
-                            #    self.outfile.write('"' + self.requestsPool[clientid][refid]['query'] + '",')
-                            #    if self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETOBJPERMISSIONS':
-                            #        self.outfile.write('CfgACE,1,')
-                            #    elif (self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_CLIENTREGISTER' or  self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_AUTHENTICATE'):
-                            #        self.outfile.write('RegisterEventSync,1,')
-                            #    else:
-                            #        self.outfile.write(self.lastObjectSent + ',' + str(self.lastObjectSentNum) + ',')
-                            #    self.outfile.write(sreqdt + ',')
-                            #    self.outfile.write(sresdt + ',')
-                            #    self.outfile.write(self.requestsPool[clientid][refid]['file'] + ',')
-                            #    self.outfile.write(str(self.requestsPool[clientid][refid]['line']) + ',')
-                            #    self.outfile.write(self.filename + ',')
-                            #    self.outfile.write(str(self.lineCntr - 1))
-                            #    self.outfile.write('\n')
-                            #    self.msgcntr=self.msgcntr+1
-                            self.d_cs_msg = self.d_cs_clients_msgs[clientid][refid].copy()
-                            self.d_cs_msg['duration'] = msdelta
-                            del self.d_cs_clients_msgs[clientid][refid]
-                            return True # responce has been updated, push self.d_cs_msg to submiter
+                            if method in self.d_cs_clients_msgs[clientid][refid]:
+                                reqfound = True
+                                reqdt = self.d_cs_clients_msgs[clientid][refid][method]['@timestamp']
+                                resdt = self.d_cs_msg['@timestamp']
+                                dtdiff = resdt - reqdt
+                                msdelta = int(dtdiff.total_seconds() * 1000)
+                                #if self.requestsPool[clientid][refid]['reqid'] == "MSGCFG_GETOBJECTINFO" or \
+                                #                self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETBRIEFINFO' or \
+                                #                self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETOBJPERMISSIONS' or \
+                                #                self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETOBJECTINFOEX' or \
+                                #                self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETSERVERPROTOCOL' or \
+                                #                (self.isregistersync and self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_CLIENTREGISTER') or \
+                                #                (self.isregistersync and self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_AUTHENTICATE'):
+                                #    """ Time,ClientID,RefId,Request,Duration,Query,ObjectType,ObjectNum,Start,End,StartFile,StartLine,EndFile,EndLine """
+                                #    self.outfile.write(resdt.strftime('%m-%dT%H:%M:%S') + ',' + clientid + ',' + refid + ',')
+                                #    self.outfile.write(self.requestsPool[clientid][refid]['reqid'] + ',')
+                                #    self.outfile.write(str(msdelta) + ',')
+                                #    self.outfile.write('"' + self.requestsPool[clientid][refid]['query'] + '",')
+                                #    if self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_GETOBJPERMISSIONS':
+                                #        self.outfile.write('CfgACE,1,')
+                                #    elif (self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_CLIENTREGISTER' or  self.requestsPool[clientid][refid]['reqid'] == 'MSGCFG_AUTHENTICATE'):
+                                #        self.outfile.write('RegisterEventSync,1,')
+                                #    else:
+                                #        self.outfile.write(self.lastObjectSent + ',' + str(self.lastObjectSentNum) + ',')
+                                #    self.outfile.write(sreqdt + ',')
+                                #    self.outfile.write(sresdt + ',')
+                                #    self.outfile.write(self.requestsPool[clientid][refid]['file'] + ',')
+                                #    self.outfile.write(str(self.requestsPool[clientid][refid]['line']) + ',')
+                                #    self.outfile.write(self.filename + ',')
+                                #    self.outfile.write(str(self.lineCntr - 1))
+                                #    self.outfile.write('\n')
+                                #    self.msgcntr=self.msgcntr+1
+
+                                # check if we have any pending exta requests associated with this client request and push them first
+                                if CSLogMessageType.ExtAuthRequest in self.d_cs_clients_msgs[clientid][refid]:
+                                    self.d_cs_msg = self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ExtAuthRequest].copy()
+                                    del self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ExtAuthRequest]
+                                    curr_cs_msg = self.cs_msg;
+                                    self.cs_msg = None
+                                    self.submit_cs_message()
+                                    self.in_cs_msg = 1
+                                    self.cs_msg = curr_cs_msg
+
+                                # push this client message out as usuall
+                                self.d_cs_msg = self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest].copy()
+                                self.d_cs_msg['duration'] = msdelta
+                                del self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]
+
+                                return True # responce has been updated, push self.d_cs_msg to submiter
 
                     logging.info("Ignored responce (no match): " + str(self.d_cs_msg))
         else:
@@ -258,12 +340,13 @@ class CSMsgParser(LogParser):
                 is_request_found = False
                 if clientid in self.d_cs_clients_msgs:
                     for refid in self.d_cs_clients_msgs[clientid]:
-                        if self.d_cs_clients_msgs[clientid][refid]['method']:
-                            if (self.d_cs_clients_msgs[clientid][refid]['method'].startswith("MSGCFG_GETOBJECT") or
-                                self.d_cs_clients_msgs[clientid][refid]['method'].startswith("MSGCFG_GETBRIEF")):
+                        if CSLogMessageType.ClientRequest in self.d_cs_clients_msgs[clientid][refid] and \
+                                self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['method']:
+                            if (self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['method'].startswith("MSGCFG_GETOBJECT") or
+                                self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['method'].startswith("MSGCFG_GETBRIEF")):
                                     is_request_found = True
-                                    self.d_cs_clients_msgs[clientid][refid]['objcntr'] = num
-                                    self.d_cs_clients_msgs[clientid][refid]['objtype'] = sobj
+                                    self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['objcntr'] = num
+                                    self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['objtype'] = sobj
 
                 if (not is_request_found):
                     logging.info("Ingnored detail message (no match): " +str(self.d_cs_msg) )
