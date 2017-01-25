@@ -62,7 +62,7 @@ class CSMsgParser(LogParser):
     pattern_cs_extauth_put_accept = re.compile('^(\S+) AUT_DBG: Authentication request received. Request ID = (\S+)') # to match ext auth thread pull request
 
     # 20:33:12.740 AUTH_DBG: Initialized data for connection to LDAP server: localhost:389...
-    pattern_cs_extauth_conn_init = re.compile('^(\S+) AUTH_DBG: Initialized data for connection to LDAP server')
+    pattern_cs_extauth_conn_init = re.compile('^(\S+) AUTH_DBG: Initialized data for connection to LDAP server: (\S+)')
 
     # 20:33:12.741 AUTH_DBG: BIND sent for request ID: -1, LDAP message ID: 1 Connection: ldap://localhost:389 (0xd50:1:0)
     pattern_cs_extauth_conn_bind = re.compile('^(\S+) AUTH_DBG: BIND sent for request ID: (-?[0-9]+)') # search == -1, bind == actual request
@@ -88,6 +88,8 @@ class CSMsgParser(LogParser):
         self.in_cs_msg = 0
         # dictionary for messages per clients that are currently pending future processing
         self.d_cs_clients_msgs = {}
+        # aux dictionary for ext auth module requests by internal reqid_exta
+        self.d_cs_exta_msgs= {}
 
         
     def init_cs_message(self):
@@ -115,6 +117,8 @@ class CSMsgParser(LogParser):
             is_ready_for_push = self.process_cs_results_message()
         elif (self.d_cs_msg['csmsgclass'])==CSLogMessageType.ExtAuthRequest:
             is_ready_for_push = self.process_exta_request_message()
+        elif (self.d_cs_msg['csmsgclass'])==CSLogMessageType.ExtAuthRequestAccepted:
+            is_ready_for_push = self.process_exta_accept_message()
 
         if is_ready_for_push:
             if 'vararg0' in self.d_cs_msg:
@@ -193,6 +197,34 @@ class CSMsgParser(LogParser):
                                                                        self.cur_time['m'], self.cur_time['s'],
                                                                        self.cur_time['ms'])
                                 return True
+                            else:
+                                self.re_line = self.pattern_cs_extauth_put_accept.match(line)
+                                if (self.re_line):
+                                    self.init_cs_message()
+                                    self.match_time_stamp(self.re_line.group(1))
+                                    self.cs_msg = line[len(self.re_line.group(1)):]
+                                    self.d_cs_msg['csmsgclass'] = CSLogMessageType.ExtAuthRequestAccepted
+                                    self.d_cs_msg['vararg0'] = (self.re_line.group(2))[
+                                                               :4096]  # extauth request id in debug message
+                                    self.d_cs_msg['@timestamp'] = datetime(self.cur_date['y'], self.cur_date['m'],
+                                                                           self.cur_date['d'], self.cur_time['h'],
+                                                                           self.cur_time['m'], self.cur_time['s'],
+                                                                           self.cur_time['ms'])
+                                else:
+                                    self.re_line = self.pattern_cs_extauth_conn_init.match(line)
+                                    if (self.re_line):
+                                        self.init_cs_message()
+                                        self.match_time_stamp(self.re_line.group(1))
+                                        self.cs_msg = line[len(self.re_line.group(1)):]
+                                        self.d_cs_msg['csmsgclass'] = CSLogMessageType.ExtAuthInitConnection
+                                        self.d_cs_msg['vararg0'] = (self.re_line.group(2))[
+                                                                   :4096]  # connection url
+                                        self.d_cs_msg['@timestamp'] = datetime(self.cur_date['y'], self.cur_date['m'],
+                                                                               self.cur_date['d'], self.cur_time['h'],
+                                                                               self.cur_time['m'], self.cur_time['s'],
+                                                                               self.cur_time['ms'])
+
+
 
         return False
 
@@ -236,10 +268,11 @@ class CSMsgParser(LogParser):
     def process_exta_request_message(self):
         prev_msg = next(iter(self.d_cs_msg_stack or []), None)
         if prev_msg and prev_msg['csmsgclass']==CSLogMessageType.ClientRequest and (prev_msg['method']=='MSGCFG_CLIENTREGISTER' or prev_msg['method']=='MSGCFG_AUTHENTICATE'):
-            prev_msg['reqid_exta']=self.d_cs_msg['vararg0'] # store reference id  of mf_auth module request
+            reqid_exta = self.d_cs_msg['vararg0'] # store reference id  of mf_auth module request
+            prev_msg['reqid_exta']=reqid_exta
             refid = prev_msg['reqid']
             self.d_cs_msg['reqid']= refid # and copy client ref id from cs request here
-            self.d_cs_msg['reqid_exta']=self.d_cs_msg['vararg0']
+            self.d_cs_msg['reqid_exta']=reqid_exta
             clientid = prev_msg['clientid']
             self.d_cs_msg['clientid'] =clientid
             if not clientid in self.d_cs_clients_msgs:
@@ -249,8 +282,30 @@ class CSMsgParser(LogParser):
             if not CSLogMessageType.ExtAuthRequest in self.d_cs_clients_msgs[clientid][refid]:
                 self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ExtAuthRequest] = {}
             self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ExtAuthRequest] = self.d_cs_msg
+            if not reqid_exta in self.d_cs_exta_msgs:
+                self.d_cs_exta_msgs[reqid_exta] = self.d_cs_msg
+            else:
+                logging.info("CS external auth request request with duplicated ID: " + str(self.d_cs_msg))
 
             return False # we will push extauth request after we update it with thread response
+        elif prev_msg and prev_msg['csmsgclass']==CSLogMessageType.ServerResponce \
+                and (prev_msg['method']=='MSGCFG_CLIENTREGISTERED' or prev_msg['method']=='MSGCFG_AUTHENTICATED' or prev_msg['method']=='MSGCFG_ERROR'):
+            return True # push this (updated) internal message together with final server responce
+
+
+    def process_exta_accept_message(self):
+        # check currently processed
+        reqid_exta = self.d_cs_msg['vararg0']  # store reference id  of mf_auth module request
+        if reqid_exta in  self.d_cs_exta_msgs:
+            readt = self.d_cs_msg['@timestamp']
+            self.d_cs_exta_msgs[reqid_exta]['exta_accepted'] =1
+            reqdt = self.d_cs_exta_msgs[reqid_exta]['@timestamp']
+            dtdiff = readt - reqdt
+            msdelta = int(dtdiff.total_seconds() * 1000)
+            self.d_cs_exta_msgs[reqid_exta]['duration_accept_exta'] = msdelta
+
+        return False # accept messages should be discarded (will push updated exta reques entry when we process final responce)
+
 
 
 
@@ -262,7 +317,7 @@ class CSMsgParser(LogParser):
                 clientid = tokens[6]
                 pc = self.cs_msg.find("IATRCFG_REQUESTID")
                 if pc != -1:
-                    pce = self.cs_msg.find('\n', pc + 37)
+                    pce = self.cs_msg.find('\n', pc + 37) # len("IATRCFG_ERRORCODE           value:   ")
                     refid = self.cs_msg[pc + 37:pce]
                     method = CSLogMessageType.ClientRequest;
                     ''' Check if request exists in pool '''
@@ -270,8 +325,8 @@ class CSMsgParser(LogParser):
                     if clientid in self.d_cs_clients_msgs:
                         if refid in self.d_cs_clients_msgs[clientid]:
                             if method in self.d_cs_clients_msgs[clientid][refid]:
-                                reqfound = True
-                                reqdt = self.d_cs_clients_msgs[clientid][refid][method]['@timestamp']
+                                clientreqmsg = self.d_cs_clients_msgs[clientid][refid][method]
+                                reqdt = clientreqmsg['@timestamp']
                                 resdt = self.d_cs_msg['@timestamp']
                                 dtdiff = resdt - reqdt
                                 msdelta = int(dtdiff.total_seconds() * 1000)
@@ -302,20 +357,56 @@ class CSMsgParser(LogParser):
                                 #    self.outfile.write('\n')
                                 #    self.msgcntr=self.msgcntr+1
 
-                                # check if we have any pending exta requests associated with this client request and push them first
+                                # check if this is error message or regular responce
+                                if self.d_cs_msg['method'] == 'MSGCFG_ERROR':
+                                    clientreqmsg['is_failed'] = True
+                                    pc = self.cs_msg.find("IATRCFG_ERRORCODE")
+                                    if pc != -1:
+                                        pce = self.cs_msg.find('\n', pc + 37)
+                                        clientreqmsg['error_code'] = self.cs_msg[pc + 37:pce]
+                                    else:
+                                        clientreqmsg['error_code'] = -1
+                                    pc = self.cs_msg.find("SATRCFG_DESCRIPTION")
+                                    if pc != -1:
+                                        pce = self.cs_msg.find('\n', pc + 37)
+                                        clientreqmsg['error_description'] = self.cs_msg[pc + 37:pce]
+                                    else:
+                                        clientreqmsg['error_description'] = ''
+                                else:
+                                    clientreqmsg['is_failed'] = False
+                                    clientreqmsg['error_code'] = 0
+                                    clientreqmsg['error_description'] = ''
+
+
+                                    # check if we have any pending exta requests associated with this client request and push them first
                                 if CSLogMessageType.ExtAuthRequest in self.d_cs_clients_msgs[clientid][refid]:
+                                    prev_msg = next(iter(self.d_cs_msg_stack or []), None)
+                                    if prev_msg:
+                                        self.d_cs_msg_stack.pop(0)
+                                    self.d_cs_msg_stack.append(self.d_cs_msg)
                                     self.d_cs_msg = self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ExtAuthRequest].copy()
                                     del self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ExtAuthRequest]
+                                    if self.d_cs_msg['reqid_exta'] in self.d_cs_exta_msgs:
+                                        del self.d_cs_exta_msgs[self.d_cs_msg['reqid_exta']]
+                                    if not 'accept_exta' in self.d_cs_msg:
+                                        self.d_cs_msg['accept_exta'] ='0'  # never accepted by module
+                                        self.d_cs_msg['duration_accept_exta'] = msdelta # duration of ext auth attempt is duration of entire client request
+
                                     curr_cs_msg = self.cs_msg;
                                     self.cs_msg = None
                                     self.submit_cs_message()
                                     self.in_cs_msg = 1
                                     self.cs_msg = curr_cs_msg
+                                    self.d_cs_msg_stack.pop(0)
+                                    if prev_msg:
+                                        self.d_cs_msg_stack.append(prev_msg)
 
                                 # push this client message out as usuall
-                                self.d_cs_msg = self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest].copy()
+                                self.d_cs_msg = clientreqmsg.copy()
                                 self.d_cs_msg['duration'] = msdelta
                                 del self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]
+                                #TODO: check if we have other abandoned internal messages associated with this id
+                                del self.d_cs_clients_msgs[clientid][refid]
 
                                 return True # responce has been updated, push self.d_cs_msg to submiter
 
@@ -342,8 +433,9 @@ class CSMsgParser(LogParser):
                     for refid in self.d_cs_clients_msgs[clientid]:
                         if CSLogMessageType.ClientRequest in self.d_cs_clients_msgs[clientid][refid] and \
                                 self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['method']:
-                            if (self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['method'].startswith("MSGCFG_GETOBJECT") or
-                                self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['method'].startswith("MSGCFG_GETBRIEF")):
+                            m = self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['method']
+                            if (m.startswith("MSGCFG_GETOBJECT") or
+                                m.startswith("MSGCFG_GETBRIEF")):
                                     is_request_found = True
                                     self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['objcntr'] = num
                                     self.d_cs_clients_msgs[clientid][refid][CSLogMessageType.ClientRequest]['objtype'] = sobj
