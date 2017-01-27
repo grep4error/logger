@@ -347,7 +347,12 @@ class CSMsgParser(LogParser):
         else:
             logging.info("Ignored request (wrong format): "+ str(self.d_cs_msg) )
 
-        return True # this is unknown request/client , push it as is
+        self.d_cs_msg['reqid'] = -1
+        self.d_cs_msg['clientid'] = -1
+        self.d_cs_msg['query'] = ''
+
+        return True # this is unknown request/client , push it as is and create expected fields with empty values
+
 
     def process_exta_request_message(self):
         prev_msg = next(iter(self.d_cs_msg_stack or []), None)
