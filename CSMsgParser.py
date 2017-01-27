@@ -9,7 +9,7 @@ class CSLogMessageType:
         Unknown, \
         ClientRequest, ServerResponce, ServerResponceDetail, \
         ExtAuthRequest,ExtAuthRequestAccepted, \
-        ExtAuthInitConnection, ExtAuthInitConnectionAccepted, ExtAuthBIND = range(9)
+        ExtAuthInitConnection, ExtAuthInitConnectionAccepted, ExtAuthBIND, ExtAuthClosed = range(10)
 
 class CSMsgParser(LogParser):
     # static vars
@@ -65,10 +65,15 @@ class CSMsgParser(LogParser):
     pattern_cs_extauth_conn_init = re.compile('^(\S+) AUTH_DBG: Initialized data for connection to LDAP server: (\S+)')
 
     # 20:33:12.741 AUTH_DBG: BIND sent for request ID: -1, LDAP message ID: 1 Connection: ldap://localhost:389 (0xd50:1:0)
-    pattern_cs_extauth_conn_bind = re.compile('^(\S+) AUTH_DBG: BIND sent for request ID: (-?[0-9]+)') # search == -1, bind == actual request
+    pattern_cs_extauth_conn_bind = re.compile('^(\S+) AUTH_DBG: BIND sent for request ID: (-?[0-9]+), LDAP message ID: (-?[0-9]+) Connection: ldap\w?://(\S+)') # search == -1, bind == actual request
 
     # 20:33:12.741 AUTH_DBG: Connection type 1 is initialized.
     pattern_cs_extauth_conn_inited = re.compile('^(\S+) AUTH_DBG: Connection type (\d+) is initialized') # type==1 - search, 2-bind
+
+    # 20:04:11.054 AUTH_DBG: Connection ldaps://WIN-9MQ5RBO1DVT.gentn.com:636 (0xec024130:1:6) was closed.
+    # 20:04:11.055 AUTH_DBG: Connection ldaps://WIN-9MQ5RBO1DVT.gentn.com:636 (0xec08ad90:2:6) was closed.
+    pattern_cs_extauth_conn_close = re.compile('^(\S+) AUTH_DBG: Connection ldap\w?://(\S+) \(\w+:(\d):(\d)\) was closed')  # second group denote conenction type: 1- search, 2-bind
+
 
 
 
@@ -86,10 +91,15 @@ class CSMsgParser(LogParser):
 
         # bool we are in CS msg
         self.in_cs_msg = 0
+        # we are handling termination (cleanup caches)
+        self.in_shutdown = False
         # dictionary for messages per clients that are currently pending future processing
         self.d_cs_clients_msgs = {}
-        # aux dictionary for ext auth module requests by internal reqid_exta
+        # aux dictionary for ext auth module requests by internal reqid_exta (linked to d_cs_clients_msgs
         self.d_cs_exta_msgs= {}
+        # dictonary for ext auth operations messages by ext auth endpoint
+        self.d_cs_exta_intops={}
+
 
         
     def init_cs_message(self):
@@ -102,14 +112,19 @@ class CSMsgParser(LogParser):
         self.d_cs_msg = self.d_common_tags.copy()
         self.d_cs_msg['csmsgclass']= CSLogMessageType.Unknown
         self.d_cs_msg['vararg0'] =None
+        self.d_cs_msg['vararg1'] = None
+        self.d_cs_msg['vararg2'] = None
         return
     
     def submit_cs_message(self):
         if self.cs_msg:
             self.d_cs_msg['message'] = self.cs_msg
-        # TODO: only submit messages into submiter when processing has been completed (we have matching responce. maybe check for timeout, client disconnect, etc?)
+        # only submit messages into submiter when processing has been completed (we have matching responce. maybe check for timeout, client disconnect, etc?)
+        # exception is if we are shutting down, then submit as is
         is_ready_for_push = False
-        if (self.d_cs_msg['csmsgclass']==CSLogMessageType.ClientRequest):
+        if self.in_shutdown:
+            is_ready_for_push = True
+        elif (self.d_cs_msg['csmsgclass']==CSLogMessageType.ClientRequest):
             is_ready_for_push = self.process_cs_request_message()
         elif (self.d_cs_msg['csmsgclass']==CSLogMessageType.ServerResponce):
             is_ready_for_push = self.process_cs_responce_message()
@@ -119,10 +134,23 @@ class CSMsgParser(LogParser):
             is_ready_for_push = self.process_exta_request_message()
         elif (self.d_cs_msg['csmsgclass'])==CSLogMessageType.ExtAuthRequestAccepted:
             is_ready_for_push = self.process_exta_accept_message()
+        elif (self.d_cs_msg['csmsgclass'])==CSLogMessageType.ExtAuthInitConnection:
+            is_ready_for_push = self.process_exta_initconn_message()
+        elif (self.d_cs_msg['csmsgclass'])==CSLogMessageType.ExtAuthInitConnectionAccepted:
+            is_ready_for_push = self.process_exta_acceptconn_message()
+        elif (self.d_cs_msg['csmsgclass'])==CSLogMessageType.ExtAuthBIND:
+            is_ready_for_push = self.process_exta_bind_message()
+        elif (self.d_cs_msg['csmsgclass'])==CSLogMessageType.ExtAuthClosed:
+            is_ready_for_push = self.process_exta_connclosed_message()
 
         if is_ready_for_push:
             if 'vararg0' in self.d_cs_msg:
                 del self.d_cs_msg['vararg0'] # cleanup transient tags attached during parsing phase
+            if 'vararg1' in self.d_cs_msg:
+                del self.d_cs_msg['vararg1']
+            if 'vararg2' in self.d_cs_msg:
+                del self.d_cs_msg['vararg2']
+
             self.submitter.d_submit(self.d_cs_msg,"CS")
         self.in_cs_msg = 0
         return
@@ -218,11 +246,67 @@ class CSMsgParser(LogParser):
                                         self.cs_msg = line[len(self.re_line.group(1)):]
                                         self.d_cs_msg['csmsgclass'] = CSLogMessageType.ExtAuthInitConnection
                                         self.d_cs_msg['vararg0'] = (self.re_line.group(2))[
-                                                                   :4096]  # connection url
+                                                                   :4096]  # endpoint
                                         self.d_cs_msg['@timestamp'] = datetime(self.cur_date['y'], self.cur_date['m'],
                                                                                self.cur_date['d'], self.cur_time['h'],
                                                                                self.cur_time['m'], self.cur_time['s'],
                                                                                self.cur_time['ms'])
+                                    else:
+                                        self.re_line = self.pattern_cs_extauth_conn_inited.match(line)
+                                        if (self.re_line):
+                                            self.init_cs_message()
+                                            self.match_time_stamp(self.re_line.group(1))
+                                            self.cs_msg = line[len(self.re_line.group(1)):]
+                                            self.d_cs_msg['csmsgclass'] = CSLogMessageType.ExtAuthInitConnectionAccepted
+                                            self.d_cs_msg['vararg0'] = (self.re_line.group(2))[
+                                                                       :4096]  # connection type
+                                            self.d_cs_msg['@timestamp'] = datetime(self.cur_date['y'],
+                                                                                   self.cur_date['m'],
+                                                                                   self.cur_date['d'],
+                                                                                   self.cur_time['h'],
+                                                                                   self.cur_time['m'],
+                                                                                   self.cur_time['s'],
+                                                                                   self.cur_time['ms'])
+                                        else:
+                                            self.re_line = self.pattern_cs_extauth_conn_bind.match(line)
+                                            if (self.re_line):
+                                                self.init_cs_message()
+                                                self.match_time_stamp(self.re_line.group(1))
+                                                self.cs_msg = line[len(self.re_line.group(1)):]
+                                                self.d_cs_msg['csmsgclass'] = CSLogMessageType.ExtAuthBIND
+                                                self.d_cs_msg['vararg0'] = (self.re_line.group(2))[
+                                                                           :4096]  # request id
+                                                self.d_cs_msg['vararg1'] = (self.re_line.group(3))[
+                                                                           :4096]  # ldap msg id
+                                                self.d_cs_msg['vararg2'] = (self.re_line.group(4))[
+                                                                           :4096]  # endpoint
+                                                self.d_cs_msg['@timestamp'] = datetime(self.cur_date['y'],
+                                                                                       self.cur_date['m'],
+                                                                                       self.cur_date['d'],
+                                                                                       self.cur_time['h'],
+                                                                                       self.cur_time['m'],
+                                                                                       self.cur_time['s'],
+                                                                                       self.cur_time['ms'])
+                                            else:
+                                                self.re_line = self.pattern_cs_extauth_conn_close.match(line)
+                                                if (self.re_line):
+                                                    self.init_cs_message()
+                                                    self.match_time_stamp(self.re_line.group(1))
+                                                    self.cs_msg = line[len(self.re_line.group(1)):]
+                                                    self.d_cs_msg['csmsgclass'] = CSLogMessageType.ExtAuthClosed
+                                                    self.d_cs_msg['vararg0'] = (self.re_line.group(2))[
+                                                                               :4096]  # endpoint
+                                                    self.d_cs_msg['vararg1'] = (self.re_line.group(3))[
+                                                                               :4096]  # type
+                                                    self.d_cs_msg['vararg2'] = (self.re_line.group(4))[
+                                                                               :4096]  # state
+                                                    self.d_cs_msg['@timestamp'] = datetime(self.cur_date['y'],
+                                                                                           self.cur_date['m'],
+                                                                                           self.cur_date['d'],
+                                                                                           self.cur_time['h'],
+                                                                                           self.cur_time['m'],
+                                                                                           self.cur_time['s'],
+                                                                                           self.cur_time['ms'])
 
 
 
@@ -298,7 +382,7 @@ class CSMsgParser(LogParser):
         reqid_exta = self.d_cs_msg['vararg0']  # store reference id  of mf_auth module request
         if reqid_exta in  self.d_cs_exta_msgs:
             readt = self.d_cs_msg['@timestamp']
-            self.d_cs_exta_msgs[reqid_exta]['exta_accepted'] =1
+            self.d_cs_exta_msgs[reqid_exta]['is_failed'] =0
             reqdt = self.d_cs_exta_msgs[reqid_exta]['@timestamp']
             dtdiff = readt - reqdt
             msdelta = int(dtdiff.total_seconds() * 1000)
@@ -307,6 +391,107 @@ class CSMsgParser(LogParser):
         return False # accept messages should be discarded (will push updated exta reques entry when we process final responce)
 
 
+    def process_exta_initconn_message(self):
+        ldap_target = self.d_cs_msg['vararg0'].rstrip('.')  # store target server:port
+
+        if not ldap_target in self.d_cs_exta_intops:
+            self.d_cs_exta_intops[ldap_target] = {}
+        self.d_cs_msg['method'] = 'LDAP_INIT'
+        self.d_cs_msg['is_failed'] = -1  # not accepted yet
+        self.d_cs_msg['duration_accept_exta'] = 0
+        self.d_cs_msg['conn_type_exta'] = None
+        # we cannot distinguish between several init connection attempts, we assume extmodule always re-establish
+        # only one connection at a time
+        if not CSLogMessageType.ExtAuthInitConnection in self.d_cs_exta_intops[ldap_target]:
+            self.d_cs_exta_intops[ldap_target][CSLogMessageType.ExtAuthInitConnection] = self.d_cs_msg
+        else:
+            if self.d_cs_exta_intops[ldap_target][CSLogMessageType.ExtAuthInitConnection]['is_failed'] != 0:
+                curr_msg = self.d_cs_msg
+                self.d_cs_msg = self.d_cs_exta_intops[ldap_target][CSLogMessageType.ExtAuthInitConnection]
+                self.d_cs_exta_intops[ldap_target][CSLogMessageType.ExtAuthInitConnection] = curr_msg
+                return True # previos connection was not accepted, push it as current message and swap to new in hash
+            else:
+                self.d_cs_exta_intops[ldap_target][CSLogMessageType.ExtAuthInitConnection] =self.d_cs_msg
+
+        return False  # we will push extauth operation after we update it with responce
+
+    def process_exta_acceptconn_message(self):
+        conn_type_id = self.d_cs_msg['vararg0']
+        # scan all non-committed connections and check that type of non-committed conn match (SEARCH==SEARCH)
+        # or type of non-commited connection is unknown and our  type is BIND
+        for endpoint in self.d_cs_exta_intops:
+            if CSLogMessageType.ExtAuthInitConnection in self.d_cs_exta_intops[endpoint]:
+                msg_candidate =self.d_cs_exta_intops[endpoint][CSLogMessageType.ExtAuthInitConnection]
+                is_matched = False
+                if msg_candidate['is_failed'] == -1:
+                    if (not msg_candidate['conn_type_exta']) and (conn_type_id == '2'): # BIND connection
+                        msg_candidate['is_failed'] = 0
+                        msg_candidate['conn_type_exta'] = 'BIND'
+                        is_matched = True
+                    elif (msg_candidate['conn_type_exta'] == 'SEARCH') and (conn_type_id == '1'): # SEARCH connection
+                        msg_candidate['is_failed'] = 0
+                        msg_candidate['conn_type_exta'] = 'SEARCH'
+                        is_matched = True
+                    if is_matched:
+                        # extract and submit original conection message, discard this one
+                        reqdt = msg_candidate['@timestamp']
+                        resdt = self.d_cs_msg['@timestamp']
+                        dtdiff = resdt - reqdt
+                        msdelta = int(dtdiff.total_seconds() * 1000)
+                        self.d_cs_msg = msg_candidate.copy()
+                        self.d_cs_msg['duration_accept_exta'] = msdelta
+                        del self.d_cs_exta_intops[endpoint][CSLogMessageType.ExtAuthInitConnection]
+                        return True  # responce has been updated, push self.d_cs_msg to submiter
+        logging.info("Ignored exta connection establishment (no match): " + str(self.d_cs_msg))
+
+        return False
+
+    def process_exta_bind_message(self):
+        reqid_exta = self.d_cs_msg['vararg0']
+        if reqid_exta == '-1':  # this is administrative bind for search connection
+            endpoint = self.d_cs_msg['vararg2']
+            if endpoint in self.d_cs_exta_intops:
+                if CSLogMessageType.ExtAuthInitConnection in self.d_cs_exta_intops[endpoint]:
+                    msg_candidate = self.d_cs_exta_intops[endpoint][CSLogMessageType.ExtAuthInitConnection]
+                    if (msg_candidate['is_failed'] == -1) and (not msg_candidate['conn_type_exta']):
+                        msg_candidate['conn_type_exta'] = 'SEARCH'
+                        return False # todo, maybe calculate duration in case we wont get final conenction init?
+            logging.info("exta Administrative BIND (no match): " + str(self.d_cs_msg))
+            self.d_cs_msg['reqid_exta'] =-1
+            self.d_cs_msg['reqid'] = -1
+            self.d_cs_msg['method']= 'LDAP_BIND'
+            return True # we report any of such messages as is
+        elif reqid_exta in self.d_cs_exta_msgs:
+            reqid = self.d_cs_exta_msgs[reqid_exta]['reqid']
+            self.d_cs_msg['reqid_exta'] =reqid_exta
+            self.d_cs_msg['reqid'] = reqid
+            self.d_cs_msg['method'] = 'LDAP_BIND'
+            return True
+
+    def process_exta_connclosed_message(self):
+        endpoint = self.d_cs_msg['vararg0']
+        if endpoint in self.d_cs_exta_intops:
+            if CSLogMessageType.ExtAuthInitConnection in self.d_cs_exta_intops[endpoint]:
+                conn_inited = self.d_cs_exta_intops[endpoint][CSLogMessageType.ExtAuthInitConnection]
+                if conn_inited['is_failed'] == -1 and (not conn_inited['conn_type_exta']  or conn_inited['conn_type_exta'] == 'SEARCH'):
+                    # if we see disconnect from endpoint while we have pending SEARCH or unknown conenction then it is LIKELY this connection error
+                    conn_inited['is_failed'] = 1
+                    # extract and submit original conection message, discard this one
+                    reqdt = conn_inited['@timestamp']
+                    resdt = self.d_cs_msg['@timestamp']
+                    dtdiff = resdt - reqdt
+                    msdelta = int(dtdiff.total_seconds() * 1000)
+                    self.d_cs_msg = conn_inited.copy()
+                    self.d_cs_msg['duration_accept_exta'] = msdelta
+                    del self.d_cs_exta_intops[endpoint][CSLogMessageType.ExtAuthInitConnection]
+                    return True  # responce has been updated, push self.d_cs_msg to submiter
+        if self.d_cs_msg['vararg1']=='1':
+            self.d_cs_msg['conn_type_exta'] =  'SEARCH'
+        else:
+            self.d_cs_msg['conn_type_exta'] = 'BIND'
+        self.d_cs_msg['conn_state'] =  self.d_cs_msg['vararg2']
+        self.d_cs_msg['method'] = 'LDAP_CLOSE'
+        return True
 
 
     def process_cs_responce_message(self):
@@ -359,7 +544,7 @@ class CSMsgParser(LogParser):
 
                                 # check if this is error message or regular responce
                                 if self.d_cs_msg['method'] == 'MSGCFG_ERROR':
-                                    clientreqmsg['is_failed'] = True
+                                    clientreqmsg['is_failed'] = 1
                                     pc = self.cs_msg.find("IATRCFG_ERRORCODE")
                                     if pc != -1:
                                         pce = self.cs_msg.find('\n', pc + 37)
@@ -373,7 +558,7 @@ class CSMsgParser(LogParser):
                                     else:
                                         clientreqmsg['error_description'] = ''
                                 else:
-                                    clientreqmsg['is_failed'] = False
+                                    clientreqmsg['is_failed'] = 0
                                     clientreqmsg['error_code'] = 0
                                     clientreqmsg['error_description'] = ''
 
@@ -389,7 +574,7 @@ class CSMsgParser(LogParser):
                                     if self.d_cs_msg['reqid_exta'] in self.d_cs_exta_msgs:
                                         del self.d_cs_exta_msgs[self.d_cs_msg['reqid_exta']]
                                     if not 'accept_exta' in self.d_cs_msg:
-                                        self.d_cs_msg['accept_exta'] ='0'  # never accepted by module
+                                        self.d_cs_msg['is_failed'] ='1'  # never accepted by module
                                         self.d_cs_msg['duration_accept_exta'] = msdelta # duration of ext auth attempt is duration of entire client request
 
                                     curr_cs_msg = self.cs_msg;
@@ -449,7 +634,23 @@ class CSMsgParser(LogParser):
 
     def __del__(self):
         logging.debug("SIPSMsgParser __del__")
+        self.in_shutdown = True
         if(self.in_cs_msg):
             self.submit_cs_message()
+        # go through all caches and submit unprocessed messages as-is
+        # clients/requests cache
+        for clientid in self.d_cs_clients_msgs:
+            for refid in self.d_cs_clients_msgs[clientid]:
+                for typeid in self.d_cs_clients_msgs[clientid][refid]:
+                    self.d_cs_msg = self.d_cs_clients_msgs[clientid][refid][typeid]
+                    self.d_cs_msg['is_failed'] = -1 # we dont know, no information in log
+                    self.submit_cs_message()
+        #external auth messages
+        for endpoint in self.d_cs_exta_intops:
+            for typeid in self.d_cs_exta_intops[endpoint]:
+                self.d_cs_msg =self.d_cs_exta_intops[endpoint][typeid]
+                self.d_cs_msg['is_failed'] = -1  # we dont know, no information in log
+                self.submit_cs_message()
+
         LogParser.__del__(self)
         return
