@@ -1,9 +1,11 @@
 import sys
+import sys
 import glob
 import StdLibParser
 import SIPSMsgParser
 import SIPGVPMsgParser
 import TLibMsgParser
+import CSMsgParser
 import Submitter
 import eSSubmitter
 import CSVPrintSubmitter
@@ -11,6 +13,9 @@ import logging
 import json
 from Submitter import SubmitterError
 import time
+import bz2
+import gzip
+import zipfile
 
 # returns the file name and the position where parsing shoud resume or begin
 # the file name is '' if no path or file found
@@ -188,6 +193,8 @@ else:
         log_parser.append( TLibMsgParser.TLibMsgParser(submitter,tags=cmdline_tags) )
     if 'sipgvp' in cmdline_parsers_list:      
         log_parser.append( SIPGVPMsgParser.SIPGVPMsgParser(submitter,tags=cmdline_tags) )
+    if 'cs' in cmdline_parsers_list:
+        log_parser.append( CSMsgParser.CSMsgParser(submitter,tags=cmdline_tags) )
 
 # timing
     start_time = time.time()
@@ -197,9 +204,21 @@ else:
     file_list = glob.glob(cmdline_file_mask)
     file_list.sort()
     for cur_file_name in file_list:
+
         if cur_file_name >= file_and_pos[0]:
             logging.info( "reading file name " +cur_file_name)
-            cur_file = open(cur_file_name,'r+')
+
+            cur_file = None
+            if cur_file_name.endswith("bz2"):
+                cur_file = bz2.BZ2File(cur_file_name)
+            elif cur_file_name.endswith("gz"):
+                cur_file = gzip.GzipFile(cur_file_name)
+            elif cur_file_name.endswith("zip"):
+                zf = zipfile.ZipFile(cur_file_name)
+                cur_file = zf.open(zf.infolist()[0])
+            else:
+                cur_file = open(cur_file_name,'r+')
+
             # add file name to tags
             for parser in log_parser:
                 parser.set_file(cur_file_name)
